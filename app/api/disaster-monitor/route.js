@@ -1,1 +1,92 @@
+import { XMLParser } from 'fast-xml-parser';
 
+const parser = new XMLParser();
+
+// 1. Fungsi Ambil Data BMKG (Autogempa, Gempa Terkini, Gempa Dirasakan)
+async function fetchBMKGData() {
+  try {
+    const [resAuto, resTerkini, resDirasakan] = await Promise.all([
+      fetch('https://data.bmkg.go.id/DataMKG/TEWS/autogempa.xml'),
+      fetch('https://data.bmkg.go.id/DataMKG/TEWS/gempaterkini.xml'),
+      fetch('https://data.bmkg.go.id/DataMKG/TEWS/gempadirasakan.xml')
+    ]);
+
+    const [xmlAuto, xmlTerkini, xmlDirasakan] = await Promise.all([
+      resAuto.text(),
+      resTerkini.text(),
+      resDirasakan.text()
+    ]);
+
+    const autogempa = parser.parse(xmlAuto).Infogempa.gempa;
+    const gempaterkini = parser.parse(xmlTerkini).Infogempa.gempa;
+    const gempadirasakan = parser.parse(xmlDirasakan).Infogempa.gempa;
+
+    return {
+      autogempa: {
+        tanggal: autogempa.Tanggal,
+        jam: autogempa.Jam,
+        magnitudo: autogempa.Magnitude,
+        kedalaman: autogempa.Kedalaman,
+        wilayah: autogempa.Wilayah,
+        potensi: autogempa.Potensi,
+        shakemapUrl: `https://static.bmkg.go.id/${autogempa.Shakemap}`
+      },
+      gempaterkini: gempaterkini.slice(0, 5), // Ambil 5 teratas
+      gempadirasakan: gempadirasakan.slice(0, 5)
+    };
+  } catch (error) {
+    console.error("Gagal ambil data BMKG:", error);
+    return null;
+  }
+}
+
+// 2. Fungsi Analisis Menggunakan AI Groq (Aman dengan Environment Variable)
+async function getAIAnalysis(bmkgData) {
+  try {
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        messages: [
+          {
+            role: "system",
+            content: "Anda adalah sistem analisis kebencanaan cerdas untuk website Indonesia Disaster Monitor. Buat ringkasan singkat, padat, dan instruksi mitigasi darurat dalam bahasa Indonesia berdasarkan data gempa yang diberikan."
+          },
+          {
+            role: "user",
+            content: `Analisis data gempa terbaru ini: ${JSON.stringify(bmkgData)}`
+          }
+        ],
+        temperature: 0.5
+      })
+    });
+
+    const result = await response.json();
+    return result.choices?.[0]?.message?.content || "Analisis AI tidak tersedia.";
+  } catch (error) {
+    console.error("Gagal memanggil Groq AI:", error);
+    return "Gagal menghasilkan analisis AI.";
+  }
+}
+
+// 3. Endpoint Utama (GET)
+export async function GET() {
+  const bmkgData = await fetchBMKGData();
+  
+  if (!bmkgData) {
+    return Response.json({ error: "Gagal memuat data kebencanaan" }, { status: 500 });
+  }
+
+  const aiAnalysis = await getAIAnalysis(bmkgData);
+
+  return Response.json({
+    status: "SUCCESS",
+    data_bmkg: bmkgData,
+    analisis_ai: aiAnalysis
+  });
+  }
+              
